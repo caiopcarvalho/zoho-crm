@@ -1,4 +1,4 @@
-const ZCRMRestClient = require('@pedrolian/zcrmsdk');
+const ZCRMRestClient = require('@caiopcarvalho/zcrmsdk');
 
 module.exports = class Stack {
   constructor(poolSize) {
