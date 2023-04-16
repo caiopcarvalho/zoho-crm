@@ -274,7 +274,7 @@ module.exports = class ZohoClass {
 
         this.StackPush('MODULES', 'post', { module: moduleName, body: { data: row, ...options } }, (response) => {
           counter++;
-          if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 202) {
+          if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 202 || response.statusCode === 207) {
             const response_data = JSON.parse(response.body).data;
             response_data.map((res) => {
               if (res.status == 'success') {
@@ -702,6 +702,7 @@ module.exports = class ZohoClass {
    * @param {String} moduleName ZohoCRM Module
    * @param {String} id Record  Id
    * @param {File Stream} data
+   * @param {Object} callback
    * @returns
    */
    attachFile(moduleName, id, data, callback) {
@@ -717,4 +718,174 @@ module.exports = class ZohoClass {
       });
     });
   }
+
+  /**
+   * Get attachments from a specific document in Zoho CRM
+   * @param {String} moduleName ZohoCRM Module
+   * @param {String} id Record  Id
+   * @param {String} documentId Document Id
+   * @param {Object} callback
+   * @returns
+   */
+   listFile(moduleName, id, callback) {
+    return new Promise((resolve, reject) => {
+      // TODO: Recursive get all attachments by validating info: { per_page: 200, count: 1, page: 1, more_records: true } in response
+      this.StackPush('ATTACHMENTS', 'listFile', { module: moduleName, id: id }, (response) => {
+        const response_data = JSON.parse(response.body);
+        if (callback !== undefined) {
+          if (response.statusCode === 200) callback(false, { module: moduleName, data: response_data.data });
+          else callback(response_data, null);
+        }
+        if (response.statusCode === 200) return resolve({ module: moduleName, data:  response_data.data });
+        else return reject(response_data);
+      });
+    });
+  }
+
+  /**
+   * Download file from a specific document in Zoho CRM
+   * @param {String} moduleName ZohoCRM Module
+   * @param {String} id Record  Id
+   * @param {String} documentId Document Id
+   * @param {Object} callback
+   * @returns
+   */
+   downloadFile(moduleName, id, documentId, callback) {
+    return new Promise((resolve, reject) => {
+      this.StackPush('ATTACHMENTS', 'downloadFile', { module: moduleName, id: id, relatedId: documentId }, (response) => {
+        const response_data = (response.body);
+        const response_filename = response.filename
+        if (callback !== undefined) {
+          if (response.statusCode === 200) callback(false, { filename: response_filename, data: response_data });
+          else callback(response_data, null);
+        }
+        if (response.statusCode === 200) return resolve({ filename: response_filename, data: response_data });
+        else return reject(response_data);
+      });
+    });
+  }
+
+  /**
+   * Queries Zoho CRM
+   * @param {String} query COQL Query
+   * @param {Object} options Extra options allowed to send with request
+   * @param {Object} callback
+   * @returns
+   */
+  coql(query, options, callback) {
+    options = ToOptions.parse(options);
+    options.limit = options.hasOwnProperty('limit') ? options.limit : 200;
+    options.offset = options.hasOwnProperty('offset') ? options.offset : 0;
+    options.all = options.hasOwnProperty('all') ? options.all : false;
+    options.chunk = options.hasOwnProperty('chunk') ? options.chunk : 1;
+
+    let returnData = [];
+
+    return new Promise((resolve, reject) => {
+      let lastOffsetWithNoResults = null;
+
+      const fetchData = async (offset, chunkIndex) => {
+        const queryWithLimit = `${query} LIMIT ${options.limit} OFFSET ${offset}`;
+        Logger.debug(`Coql -- Query: [${queryWithLimit}]`);
+
+        return new Promise((resolve, reject) => {
+          this.StackPush('MODULES', 'coql', { body: { select_query: queryWithLimit } }, async (response) => {
+
+            if(response.statusCode === 200) {
+              const response_data = JSON.parse(response.body);
+
+              if (callback !== undefined) {
+                callback(false, response_data.data, { query, queryWithLimit });
+              }
+
+              if (options.all && response_data.info && response_data.info.more_records) {
+                if (!response_data.data.length) {
+                  if (lastOffsetWithNoResults === null || offset < lastOffsetWithNoResults) {
+                    lastOffsetWithNoResults = offset;
+                  }
+                  return resolve(returnData);
+                }
+                const nextOffset = offset + (options.limit * options.chunk);
+                const nextChunkIndex = chunkIndex + 1;
+                const nextData = await fetchData(nextOffset, nextChunkIndex);
+                response_data.data.push(...nextData);
+              }
+
+              return resolve(response_data.data);
+            }
+            else if(response.statusCode == 204) {
+              Logger.warn(`Coql -- Query: [${queryWithLimit}] -- No results`);
+              if (callback !== undefined) {
+                callback(false, returnData, { query, queryWithLimit });
+              }
+              return resolve(returnData);
+            }
+            else {
+              const error = JSON.parse(response.body);
+              Logger.error(`Coql -- Query: [${queryWithLimit}] -- Error: ${JSON.stringify(error)}`);
+              if (callback !== undefined) {
+                callback({
+                  statusCode: response.statusCode,
+                  code: error.code,
+                  message: error.message,
+                  details: error.details
+                }, returnData, { query, queryWithLimit });
+              }
+              return reject(error);
+            }
+
+          });
+        });
+      };
+
+      const chunkPromises = [];
+      for (let i = 0; i < options.chunk; i++) {
+        const offset = options.offset + (options.limit * i);
+        chunkPromises.push(fetchData(offset, i));
+      }
+
+      Promise.all(chunkPromises)
+        .then((chunksData) => {
+          let data = [];
+          chunksData.forEach((chunkData) => {
+            data.push(...chunkData);
+          });
+          resolve(data);
+        })
+        .catch((error) => {
+          reject(error);
+        });
+    });
+  }
+
+  /**
+   * Download file from Zoho File System (ZFS)
+   * @param {String} id File Id
+   * @param {Object} callback
+   * @returns
+   */
+   downloadFileZFS(id, callback) {
+    return new Promise((resolve, reject) => {
+      this.StackPush('ATTACHMENTS', 'downloadFileZFS', { id: id }, (response) => {
+        const response_data = (response.body);
+
+        if(response_data === '') {
+          if (callback !== undefined) {
+            callback('File not found.', null);
+          }
+          return reject('File not found.');
+        }
+
+        const response_filename = response.filename
+        if (callback !== undefined) {
+          if (response.statusCode === 200) callback(false, { filename: response_filename, data: response_data });
+          else callback(response_data, null);
+        }
+        if (response.statusCode === 200) return resolve({ filename: response_filename, data: response_data });
+        else return reject(response_data);
+
+      });
+    });
+  }
+
 };
